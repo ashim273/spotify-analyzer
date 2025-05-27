@@ -424,9 +424,9 @@ export default function ListeningAnalytics() {
     <div className="bg-gray-800 rounded-lg p-6">
       <h2 className="text-2xl font-bold text-white mb-6">Listening Analytics</h2>
       <br></br>
-      <div className="flex row justify-between">
+      <div className="flex justify-between">
           {/* Daily Listening Time Chart */}
-          <div className="bg-gray-700 rounded-lg p-4 w-100">
+          <div className="bg-gray-700 rounded-lg p-4 w-105">
             <h3 className="text-xl font-semibold text-white mb-4">Daily Listening Time (Last 7 Days)</h3>
             <div className="h-64">
               <Line data={dailyChartData} options={chartOptions} />
@@ -434,7 +434,7 @@ export default function ListeningAnalytics() {
           </div>
 
           {/* Hourly Listening Time Chart */}
-          <div className="bg-gray-700 rounded-lg p-4 w-100">
+          <div className="bg-gray-700 rounded-lg p-4 w-105">
             <h3 className="text-xl font-semibold text-white mb-4">Listening Time by Hour of Day</h3>
             <div className="h-64">
               <Bar data={hourlyChartData} options={chartOptions} />
@@ -442,7 +442,7 @@ export default function ListeningAnalytics() {
           </div>
 
           {/* Genre Listening Time Chart */}
-          <div className="bg-gray-700 rounded-lg p-4 w-100">
+          <div className="bg-gray-700 rounded-lg p-4 w-105">
             <h3 className="text-xl font-semibold text-white mb-4">Listening Time by Genre</h3>
             <div className="h-64">
               <Bar data={genreChartData} options={chartOptions} />
