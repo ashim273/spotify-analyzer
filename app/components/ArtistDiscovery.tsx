@@ -1,6 +1,7 @@
 /*
-This file contains the code for the Discover Artist feature: 
-- Get recommended a random new artist based on your top 5 listening genres (you select one)
+This file contains the code for the Discover Artist feature:
+- Get recommended new artists based on your top 5 listening genres (you select one)
+- You choose how many artists to see at once
 */
 
 "use client"
@@ -21,7 +22,6 @@ interface Artist {
 interface DiscoveryArtist extends Artist {
   reason: string
   relatedTo?: string
-  genres: string[]
 }
 
 // Session object from NextAuth with access token used to authenticate Spotify API requests
@@ -40,11 +40,21 @@ interface SpotifyArtistItem {
   popularity: number
 }
 
-/* 
+// Fisher-Yates shuffle, used to pick a random sample of matched artists without repeats
+function shuffleArray<T>(items: T[]): T[] {
+  const result = [...items]
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[result[i], result[j]] = [result[j], result[i]]
+  }
+  return result
+}
+
+/*
 Main component for the ArtistDiscovery feature
 - Fetches top 25 artists, extracts top 5 genres from these artists
-- Lets users select one of these top 5 genres
-- Displays a random new artist in the selected genre
+- Lets users select one of these top 5 genres and how many artists to see
+- Displays new artists whose own genre tags actually match the selected genre
 */
 export default function ArtistDiscovery() {
   // Get spotify access token from Session
@@ -53,25 +63,29 @@ export default function ArtistDiscovery() {
     status: string
   }
   // Component state
-  const [loading, setLoading] = useState(false) // tracks if app is currently fetching a new artist
+  const [loading, setLoading] = useState(false) // tracks if app is currently fetching new artists
   const [initialLoading, setInitialLoading] = useState(true) // tracks if app is still loading
-  const [error, setError] = useState<string | null>(null) // stores any error message
-  const [discoveredArtist, setDiscoveredArtist] =
-    useState<DiscoveryArtist | null>(null) // store most recently discovered artist or null
+  const [error, setError] = useState<string | null>(null) // stores auth/session-level error message
+  const [genreError, setGenreError] = useState<string | null>(null) // stores genre-search-specific error message
+  const [noExactMatches, setNoExactMatches] = useState(false) // true when the strict genre search came up empty
+  const [discoveredArtists, setDiscoveredArtists] = useState<DiscoveryArtist[]>([]) // most recently discovered artists
   const [userTopGenres, setUserTopGenres] = useState<string[]>([]) // array of user's top genres
   const [userTopArtists, setUserTopArtists] = useState<Artist[]>([]) // array of user's top artists
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null) // genre user selects to discover new artists in
+  const [artistCount, setArtistCount] = useState(5) // how many artists to recommend at once (1-10)
 
   // What to do based on the authentication status
   useEffect(() => {
     // Reset state when session changes
     if (status === "unauthenticated") {
-      setDiscoveredArtist(null)
+      setDiscoveredArtists([])
       setUserTopGenres([])
       setUserTopArtists([])
       setSelectedGenre(null)
       setInitialLoading(false)
       setError(null)
+      setGenreError(null)
+      setNoExactMatches(false)
       return
     }
 
@@ -213,8 +227,9 @@ export default function ArtistDiscovery() {
     }
   }, [session, status])
 
-  // Get a random artist from the selected genre
-  const getRandomArtistFromGenre = async (genre: string) => {
+  // Get up to `artistCount` new artists from the selected genre.
+  // `loose` controls whether a genre must match exactly (default) or just partially overlap.
+  const getArtistsFromGenre = async (genre: string, loose: boolean = false) => {
     // Check if there is a valid access token
     if (!session?.token?.access_token) {
       setError("No session token available")
@@ -224,7 +239,9 @@ export default function ArtistDiscovery() {
     try {
       setLoading(true)
       setError(null)
-      setSelectedGenre(genre) // Save selected genre to state
+      setGenreError(null)
+      setSelectedGenre(genre)
+      if (!loose) setNoExactMatches(false)
 
       // Search for artists in the selected genre, building a query
       const searchUrl = new URL("https://api.spotify.com/v1/search")
@@ -233,8 +250,6 @@ export default function ArtistDiscovery() {
       searchUrl.searchParams.append("limit", "50") // max 50 results
       searchUrl.searchParams.append("market", "US") // in the US market
 
-      console.log("Searching artists with URL:", searchUrl.toString())
-
       const response = await fetch(searchUrl.toString(), {
         headers: {
           Authorization: `Bearer ${session.token.access_token}`,
@@ -242,7 +257,7 @@ export default function ArtistDiscovery() {
         },
       })
 
-      // Error handling 
+      // Error handling
       if (!response.ok) {
         if (response.status === 429) {
           setError(
@@ -270,7 +285,6 @@ export default function ArtistDiscovery() {
       }
 
       const data = await response.json()
-      console.log("Search response:", data)
 
       if (data.error) {
         setError(
@@ -285,106 +299,74 @@ export default function ArtistDiscovery() {
         !data.artists.items ||
         data.artists.items.length === 0
       ) {
-        throw new Error(`No artists found in genre ${genre}`)
-      }
-
-      // Filter out artists that are in user's top artists
-      const newArtists = data.artists.items.filter(
-        (artist: Artist) =>
-          artist &&
-          artist.id &&
-          !userTopArtists.some((top) => top.id === artist.id)
-      )
-
-      if (newArtists.length === 0) {
-        throw new Error(`No new artists found in genre ${genre}`)
-      }
-
-      // Pick a random artist from the search results
-      const randomArtist =
-        newArtists[Math.floor(Math.random() * newArtists.length)]
-
-      if (!randomArtist.id) {
-        throw new Error("Invalid artist data received")
-      }
-
-      console.log(
-        "Selected random artist from search:",
-        randomArtist.name,
-        "ID:",
-        randomArtist.id
-      )
-
-      // Get complete artist details
-      const artistDetailsUrl = `https://api.spotify.com/v1/artists/${encodeURIComponent(
-        randomArtist.id
-      )}`
-      console.log("Fetching artist details from:", artistDetailsUrl)
-
-      const artistResponse = await fetch(artistDetailsUrl, {
-        headers: {
-          Authorization: `Bearer ${session.token.access_token}`,
-          "Content-Type": "application/json",
-        },
-      })
-
-      // More error handling: rate limit and session expiration
-      if (!artistResponse.ok) {
-        if (artistResponse.status === 429) {
-          setError(
-            "Please wait a moment - we're getting your data too quickly. Try again in a few seconds."
-          )
-          setLoading(false)
-          return
-        } else if (artistResponse.status === 401) {
-          setError(
-            "Your session has expired. Please sign out and sign in again."
-          )
-          setLoading(false)
-          return
-        }
-        setError(`Failed to get details for ${randomArtist.name}`)
+        setGenreError(`No artists found in genre "${genre}"`)
+        setDiscoveredArtists([])
         setLoading(false)
         return
       }
 
-      const fullArtistDetails = await artistResponse.json()
-      console.log("Artist details response:", fullArtistDetails)
+      // Exclude artists already in the user's top artists
+      const candidates = (data.artists.items as SpotifyArtistItem[]).filter(
+        (artist) =>
+          artist && artist.id && !userTopArtists.some((top) => top.id === artist.id)
+      )
 
-      if (!fullArtistDetails || !fullArtistDetails.id) { // if response is invalid
-        setError("Invalid artist data received")
-        setLoading(false)
-        return
-      }
+      // Spotify's `genre:` search filter is a loose relevance search, not an exact tag
+      // match, so we verify each candidate's own genre list actually contains the
+      // selected genre before recommending it (this is what previously let unrelated
+      // artists, e.g. Indian pop artists for a "k-pop" search, slip through).
+      const targetGenre = genre.toLowerCase()
+      const matches = candidates.filter((artist) =>
+        loose
+          ? artist.genres.some(
+              (g) =>
+                g.toLowerCase().includes(targetGenre) ||
+                targetGenre.includes(g.toLowerCase())
+            )
+          : artist.genres.some((g) => g.toLowerCase() === targetGenre)
+      )
 
-      if (fullArtistDetails.error) {
-        setError(
-          `Spotify is temporarily unavailable. Please try again in a moment.`
+      if (matches.length === 0) {
+        setNoExactMatches(!loose)
+        setGenreError(
+          loose
+            ? `No artists found even with a broader match for "${genre}".`
+            : `No artists are tagged exactly with "${genre}". Spotify's genre tags can be inconsistent for this genre.`
         )
+        setDiscoveredArtists([])
         setLoading(false)
         return
       }
 
-      // Find common genres between new artist's genres and user's genres
-      const commonGenres = fullArtistDetails.genres.filter((g: string) =>
-        userTopGenres.includes(g)
-      )
+      // Pick a random, non-repeating sample of the matched artists
+      const picked = shuffleArray(matches).slice(0, artistCount)
 
-      // Save discovered artist to state
-      setDiscoveredArtist({
-        ...fullArtistDetails,
-        reason:
-          commonGenres.length > 0
+      const results: DiscoveryArtist[] = picked.map((artist) => {
+        const commonGenres = artist.genres.filter((g) =>
+          userTopGenres.includes(g)
+        )
+        return {
+          ...artist,
+          reason: loose
+            ? `Broad match for "${genre}" (tagged: ${
+                artist.genres.slice(0, 3).join(", ") || "no listed genres"
+              })`
+            : commonGenres.length > 0
             ? `Shares genres with your favorites: ${commonGenres.join(", ")}`
-            : `Discovered in your selected genre: ${genre}`,
+            : `Tagged with your selected genre: ${genre}`,
+        }
       })
+
+      setDiscoveredArtists(results)
+      setGenreError(null)
+      setNoExactMatches(false)
     } catch (error) {
-      console.error("Error in getRandomArtistFromGenre:", error)
+      console.error("Error in getArtistsFromGenre:", error)
       setError(
-        error instanceof Error ? error.message : "Failed to fetch artist"
+        error instanceof Error ? error.message : "Failed to fetch artists"
       )
     } finally {
-      setLoading(false) // Set loading state to done
+      setLoading(false)
     }
   }
 
@@ -415,7 +397,7 @@ export default function ArtistDiscovery() {
     )
   }
 
-  // Show error message and retry button if request fails
+  // Show error message and retry button if the initial/auth-level request fails
   if (error) {
     return (
       <div className="bg-gray-800 rounded-lg p-6">
@@ -431,7 +413,7 @@ export default function ArtistDiscovery() {
     )
   }
 
-  // The main interface for Arist Discovery display and genre selection
+  // The main interface for Artist Discovery display and genre selection
   return (
     <div className="bg-gray-800 rounded-lg p-6">
       <h2 className="text-2xl font-bold text-white mb-4">Artist Discovery</h2>
@@ -441,10 +423,10 @@ export default function ArtistDiscovery() {
         <h3 className="text-lg font-semibold text-white mb-3">
           Select a Genre
         </h3>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
           <select
             value={selectedGenre || ""}
-            onChange={(e) => setSelectedGenre(e.target.value)} 
+            onChange={(e) => setSelectedGenre(e.target.value)}
             className="bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
             disabled={loading}
           >
@@ -456,9 +438,26 @@ export default function ArtistDiscovery() {
             ))}
           </select>
 
+          <label className="flex items-center gap-2 text-white text-sm">
+            How many?
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={artistCount}
+              onChange={(e) =>
+                setArtistCount(
+                  Math.min(10, Math.max(1, Number(e.target.value) || 1))
+                )
+              }
+              disabled={loading}
+              className="w-16 bg-gray-700 text-white px-2 py-2 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+          </label>
+
           <button
             onClick={() =>
-              selectedGenre && getRandomArtistFromGenre(selectedGenre)
+              selectedGenre && getArtistsFromGenre(selectedGenre)
             }
             disabled={loading || !selectedGenre}
             className={`px-6 py-2 bg-green-500 text-white rounded-lg transition-colors ${
@@ -467,45 +466,65 @@ export default function ArtistDiscovery() {
                 : "hover:bg-green-600"
             }`}
           >
-            {loading ? "Finding..." : "Discover New Artist"}
+            {loading ? "Finding..." : "Discover New Artists"}
           </button>
         </div>
       </div>
 
-      { /* If loading, show loading message, otherwise display new artist info */ }
-      {loading ? (
-        <div className="text-white">Finding new artists...</div> 
-      ) : discoveredArtist ? (
-        <div className="bg-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-4">
-            {discoveredArtist.images?.[0] && (
-              <Image
-                src={discoveredArtist.images[0].url}
-                alt={discoveredArtist.name}
-                width={128}
-                height={128}
-                className="rounded-lg"
-              />
-            )}
-            <div>
-              <h3 className="text-xl font-semibold text-white">
-                {discoveredArtist.name}
-              </h3>
-              <p className="text-gray-300 mt-2">{discoveredArtist.reason}</p>
-              {discoveredArtist.genres.length > 0 && (
-                <p className="text-gray-400 text-sm mt-2">
-                  Genres: {discoveredArtist.genres.join(", ")}
-                </p>
-              )}
-            </div>
-          </div>
+      { /* Genre-search-specific error, with a fallback to broader matching */ }
+      {genreError && (
+        <div className="bg-gray-700 rounded-lg p-4 mb-4">
+          <p className="text-red-300 mb-3">{genreError}</p>
+          {noExactMatches && selectedGenre && (
+            <button
+              onClick={() => getArtistsFromGenre(selectedGenre, true)}
+              disabled={loading}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
+            >
+              Try broader matches
+            </button>
+          )}
         </div>
-      ) : (
+      )}
+
+      { /* If loading, show loading message, otherwise display new artists */ }
+      {loading ? (
+        <div className="text-white">Finding new artists...</div>
+      ) : discoveredArtists.length > 0 ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {discoveredArtists.map((artist) => (
+            <div key={artist.id} className="bg-gray-700 rounded-lg p-6">
+              <div className="flex items-center space-x-4">
+                {artist.images?.[0] && (
+                  <Image
+                    src={artist.images[0].url}
+                    alt={artist.name}
+                    width={96}
+                    height={96}
+                    className="rounded-lg"
+                  />
+                )}
+                <div>
+                  <h3 className="text-xl font-semibold text-white">
+                    {artist.name}
+                  </h3>
+                  <p className="text-gray-300 mt-2 text-sm">{artist.reason}</p>
+                  {artist.genres.length > 0 && (
+                    <p className="text-gray-400 text-sm mt-2">
+                      Genres: {artist.genres.join(", ")}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : !genreError ? (
         <p className="text-gray-300">
-          Select a genre and click &quot;Discover New Artist&quot; to find new
+          Select a genre and click &quot;Discover New Artists&quot; to find new
           music!
         </p>
-      )}
+      ) : null}
     </div>
   )
 }

@@ -3,5 +3,7 @@ node_modules
 next
 .next
 .next/*
-.git 
+.git
 .next
+.claude/
+tsconfig.tsbuildinfo
